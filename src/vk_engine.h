@@ -4,16 +4,63 @@
 #pragma once
 
 #include <vk_types.h>
+#include <vk_deletion_queue.hpp>
+
+struct FrameData {
+    VkCommandPool command_pool;
+    VkCommandBuffer main_command_buffer;
+
+    VkSemaphore swapchain_semaphore, render_semaphore;
+    VkFence render_fence;
+
+    DeletionQueue deletion_queue;
+};
+
+struct AllocatedImage {
+    VkImage image;
+    VkImageView image_view;
+    VmaAllocation allocation;
+    VkExtent3D image_extent;
+    VkFormat image_format;
+};
+
+constexpr unsigned int FRAME_OVERLAP = 2;
 
 class VulkanEngine {
 public:
 
-	bool _isInitialized{ false };
-	int _frameNumber {0};
-	bool stop_rendering{ false };
-	VkExtent2D _windowExtent{ 1700 , 900 };
+    VkInstance instance;
+    VkDebugUtilsMessengerEXT debug_messenger;
+    VkPhysicalDevice chosen_gpu;
+    VkDevice device;
+    VkSurfaceKHR surface;
 
-	struct SDL_Window* _window{ nullptr };
+    // TODO: Abstract swapchain
+    VkSwapchainKHR swapchain;
+    VkFormat swapchain_image_format;
+    std::vector<VkImage> swapchain_images;
+    std::vector<VkImageView> swapchain_image_views;
+    VkExtent2D swapchain_extent;
+
+    std::array<FrameData, FRAME_OVERLAP> frames;
+
+    // TODO: Abstract commands
+    VkQueue graphics_queue;
+    uint32_t graphics_queue_family;
+
+    DeletionQueue global_deletion_queue;
+
+    VmaAllocator allocator;
+
+    AllocatedImage draw_image;
+    VkExtent2D draw_extent;
+
+	bool isInitialized{ false };
+	int frame_number {0};
+	bool stop_rendering{ false };
+	VkExtent2D windowExtent{ 1700 , 900 };
+
+	struct SDL_Window* window{ nullptr };
 
 	static VulkanEngine& Get();
 
@@ -25,7 +72,22 @@ public:
 
 	//draw loop
 	void draw();
+    void draw_background(VkCommandBuffer command_buffer);
+
+    FrameData& get_current_frame() {
+        return frames[frame_number % FRAME_OVERLAP];
+    }
 
 	//run main loop
 	void run();
+
+
+private:
+    void init_vulkan();
+    void init_swapchain();
+    void init_commands();
+    void init_sync_structures();
+
+    void create_swapchain(uint32_t width, uint32_t height);
+    void destroy_swapchain();
 };
