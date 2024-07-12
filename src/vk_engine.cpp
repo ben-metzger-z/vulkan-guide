@@ -33,7 +33,7 @@ void VulkanEngine::init() {
     // We initialize SDL and create a window with it.
     SDL_Init(SDL_INIT_VIDEO);
 
-    SDL_WindowFlags window_flags = (SDL_WindowFlags) (SDL_WINDOW_VULKAN);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_VULKAN);
 
     window = SDL_CreateWindow(
             "Vulkan Engine",
@@ -62,14 +62,6 @@ void VulkanEngine::init() {
 void VulkanEngine::cleanup() {
     if (isInitialized) {
         vkDeviceWaitIdle(device);
-
-        for (int i = 0; i < FRAME_OVERLAP; i++) {
-            vkDestroyCommandPool(device, frames[i].command_pool, nullptr);
-
-            vkDestroyFence(device, frames[i].render_fence, nullptr);
-            vkDestroySemaphore(device, frames[i].render_semaphore, nullptr);
-            vkDestroySemaphore(device, frames[i].swapchain_semaphore, nullptr);
-        }
 
         global_deletion_queue.flush();
 
@@ -166,9 +158,10 @@ void VulkanEngine::draw_background(VkCommandBuffer command_buffer) {
 
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline);
 
-    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline_layout, 0, 1, &draw_image_descriptors, 0, nullptr);
+    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline_layout, 0, 1,
+                            &draw_image_descriptors, 0, nullptr);
 
-    vkCmdDispatch(command_buffer, std::ceil(draw_extent.width/16.0), std::ceil(draw_extent.height/16.0), 1);
+    vkCmdDispatch(command_buffer, std::ceil(draw_extent.width / 16.0), std::ceil(draw_extent.height / 16.0), 1);
 }
 
 void VulkanEngine::run() {
@@ -296,6 +289,25 @@ void VulkanEngine::init_commands() {
 
         VK_CHECK(vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &frames[i].main_command_buffer));
     }
+
+    global_deletion_queue.push_function([&]() {
+        for (int i = 0; i < FRAME_OVERLAP; ++i) {
+            vkDestroyCommandPool(device, frames[i].command_pool, nullptr);
+        }
+    });
+
+    // immediate
+
+    VK_CHECK(vkCreateCommandPool(device, &command_pool_create_info, nullptr, &immediate_command_pool));
+
+    VkCommandBufferAllocateInfo command_buffer_allocate_info = vkinit::command_buffer_allocate_info(
+            immediate_command_pool, 1);
+
+    VK_CHECK(vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &immediate_command_buffer));
+
+    global_deletion_queue.push_function([&]() {
+        vkDestroyCommandPool(device, immediate_command_pool, nullptr);
+    });
 }
 
 void VulkanEngine::init_sync_structures() {
@@ -308,6 +320,21 @@ void VulkanEngine::init_sync_structures() {
         VK_CHECK(vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frames[i].swapchain_semaphore));
         VK_CHECK(vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frames[i].render_semaphore));
     }
+
+    global_deletion_queue.push_function([&]() {
+        for (int i = 0; i < FRAME_OVERLAP; ++i) {
+            vkDestroyFence(device, frames[i].render_fence, nullptr);
+
+            vkDestroySemaphore(device, frames[i].swapchain_semaphore, nullptr);
+            vkDestroySemaphore(device, frames[i].render_semaphore, nullptr);
+        }
+    });
+
+    VK_CHECK(vkCreateFence(device, &fence_create_info, nullptr, &immediate_fence));
+
+    global_deletion_queue.push_function([&]() {
+        vkDestroyFence(device, immediate_fence, nullptr);
+    });
 }
 
 void VulkanEngine::init_descriptors() {

@@ -57,12 +57,15 @@ public:
     VkExtent2D draw_extent;
 
     DescriptorAllocator global_descriptor_allocator;
-
     VkDescriptorSet  draw_image_descriptors;
     VkDescriptorSetLayout draw_image_descriptor_layout;
 
     VkPipeline gradient_pipeline;
     VkPipelineLayout  gradient_pipeline_layout;
+
+    VkFence immediate_fence;
+    VkCommandBuffer immediate_command_buffer;
+    VkCommandPool immediate_command_pool;
 
 	bool isInitialized{ false };
 	int frame_number {0};
@@ -90,6 +93,8 @@ public:
 	//run main loop
 	void run();
 
+    void immediate_submit();
+
 
 private:
     void init_vulkan();
@@ -99,6 +104,7 @@ private:
     void init_descriptors();
     void init_pipelines();
     void init_background_pipelines();
+    void init_imgui();
 
     void create_swapchain(uint32_t width, uint32_t height);
     void destroy_swapchain();
