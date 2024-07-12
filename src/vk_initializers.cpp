@@ -269,6 +269,7 @@ VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags u
 
     info.imageType = VK_IMAGE_TYPE_2D;
 
+
     info.format = format;
     info.extent = extent;
 

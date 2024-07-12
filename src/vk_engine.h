@@ -5,6 +5,7 @@
 
 #include <vk_types.h>
 #include <vk_deletion_queue.hpp>
+#include "vk_descriptors.h"
 
 struct FrameData {
     VkCommandPool command_pool;
@@ -55,6 +56,14 @@ public:
     AllocatedImage draw_image;
     VkExtent2D draw_extent;
 
+    DescriptorAllocator global_descriptor_allocator;
+
+    VkDescriptorSet  draw_image_descriptors;
+    VkDescriptorSetLayout draw_image_descriptor_layout;
+
+    VkPipeline gradient_pipeline;
+    VkPipelineLayout  gradient_pipeline_layout;
+
 	bool isInitialized{ false };
 	int frame_number {0};
 	bool stop_rendering{ false };
@@ -87,6 +96,9 @@ private:
     void init_swapchain();
     void init_commands();
     void init_sync_structures();
+    void init_descriptors();
+    void init_pipelines();
+    void init_background_pipelines();
 
     void create_swapchain(uint32_t width, uint32_t height);
     void destroy_swapchain();
