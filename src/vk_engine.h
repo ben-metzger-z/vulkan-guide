@@ -27,6 +27,24 @@ struct AllocatedImage {
 
 constexpr unsigned int FRAME_OVERLAP = 2;
 
+struct ComputePushConstants {
+    glm::vec4 data1;
+    glm::vec4 data2;
+    glm::vec4 data3;
+    glm::vec4 data4;
+};
+
+struct ComputeEffect {
+
+    const char* name;
+
+    VkPipeline pipeline;
+    VkPipelineLayout layout;
+
+    ComputePushConstants data;
+
+};
+
 class VulkanEngine {
 public:
 
@@ -67,6 +85,9 @@ public:
     VkCommandBuffer immediate_command_buffer;
     VkCommandPool immediate_command_pool;
 
+    std::vector<ComputeEffect> background_effects;
+    int current_background_effect{0};
+
 	bool isInitialized{ false };
 	int frame_number {0};
 	bool stop_rendering{ false };
@@ -85,6 +106,7 @@ public:
 	//draw loop
 	void draw();
     void draw_background(VkCommandBuffer command_buffer);
+    void draw_imgui(VkCommandBuffer command_buffer, VkImageView target_image_view);
 
     FrameData& get_current_frame() {
         return frames[frame_number % FRAME_OVERLAP];
@@ -93,7 +115,7 @@ public:
 	//run main loop
 	void run();
 
-    void immediate_submit();
+    void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
 
 private:

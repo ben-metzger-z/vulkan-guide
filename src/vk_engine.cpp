@@ -21,6 +21,10 @@
 #include "vk_mem_alloc.h"
 #include "vk_pipelines.h"
 
+#include <imgui.h>
+#include <imgui_impl_sdl2.h>
+#include <imgui_impl_vulkan.h>
+
 VulkanEngine *loadedEngine = nullptr;
 
 VulkanEngine &VulkanEngine::Get() { return *loadedEngine; }
@@ -54,6 +58,8 @@ void VulkanEngine::init() {
     init_descriptors();
 
     init_pipelines();
+
+    init_imgui();
 
     // everything went fine
     isInitialized = true;
@@ -117,7 +123,12 @@ void VulkanEngine::draw() {
                                 swapchain_extent);
 
     vkutil::transition_image(command_buffer, swapchain_images[swapchain_image_index],
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    draw_imgui(command_buffer, swapchain_image_views[swapchain_image_index]);
+
+    vkutil::transition_image(command_buffer, swapchain_images[swapchain_image_index],
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     VK_CHECK(vkEndCommandBuffer(command_buffer));
 
@@ -155,19 +166,37 @@ void VulkanEngine::draw_background(VkCommandBuffer command_buffer) {
     VkImageSubresourceRange clear_range = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
 
 //    vkCmdClearColorImage(command_buffer, draw_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &clear_range);
+    ComputeEffect& effect = background_effects[current_background_effect];
 
-    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, effect.pipeline);
 
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline_layout, 0, 1,
                             &draw_image_descriptors, 0, nullptr);
 
+    ComputePushConstants pc;
+    pc.data1 = glm::vec4(1, 0, 0, 1);
+    pc.data2 = glm::vec4(0, 0, 1, 1);
+
+    vkCmdPushConstants(command_buffer, gradient_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
+
     vkCmdDispatch(command_buffer, std::ceil(draw_extent.width / 16.0), std::ceil(draw_extent.height / 16.0), 1);
+}
+
+void VulkanEngine::draw_imgui(VkCommandBuffer command_buffer, VkImageView target_image_view) {
+    VkRenderingAttachmentInfo color_attachment = vkinit::attachment_info(target_image_view, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingInfo render_info = vkinit::rendering_info(swapchain_extent, &color_attachment, nullptr);
+
+    vkCmdBeginRendering(command_buffer, &render_info);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+
+    vkCmdEndRendering(command_buffer);
 }
 
 void VulkanEngine::run() {
 
     WindowInfo window_info;
     Events::Connect(window_info.EventHandler());
+    Events::Connect([](SDL_Event e){ ImGui_ImplSDL2_ProcessEvent(&e); });
 
     // main loop
     while (!window_info.quit) {
@@ -180,8 +209,53 @@ void VulkanEngine::run() {
             continue;
         }
 
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+
+        if (ImGui::Begin("background")) {
+
+            ComputeEffect& selected = background_effects[current_background_effect];
+
+            ImGui::Text("Selected effect: ", selected.name);
+
+            ImGui::SliderInt("Effect Index", &current_background_effect,0, background_effects.size() - 1);
+
+            ImGui::InputFloat4("data1",(float*)& selected.data.data1);
+            ImGui::InputFloat4("data2",(float*)& selected.data.data2);
+            ImGui::InputFloat4("data3",(float*)& selected.data.data3);
+            ImGui::InputFloat4("data4",(float*)& selected.data.data4);
+        }
+        ImGui::End();
+
+        ImGui::Render();
+
         draw();
     }
+}
+
+void VulkanEngine::immediate_submit(std::function<void(VkCommandBuffer command_buffer)> &&function) {
+    VK_CHECK(vkResetFences(device, 1, &immediate_fence));
+    VK_CHECK(vkResetCommandBuffer(immediate_command_buffer, 0));
+
+    VkCommandBuffer command_buffer = immediate_command_buffer;
+
+    VkCommandBufferBeginInfo command_buffer_begin_info = vkinit::command_buffer_begin_info(
+            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    VK_CHECK(vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info));
+
+    function(command_buffer);
+
+    VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+    VkCommandBufferSubmitInfo command_buffer_submit_info = vkinit::command_buffer_submit_info(command_buffer);
+    VkSubmitInfo2 submit_info = vkinit::submit_info(&command_buffer_submit_info, nullptr, nullptr);
+
+    VK_CHECK(vkQueueSubmit2(graphics_queue, 1, &submit_info, immediate_fence));
+
+    VK_CHECK(vkWaitForFences(device, 1, &immediate_fence, true, 9999999999));
+
 }
 
 void VulkanEngine::init_vulkan() {
@@ -388,12 +462,28 @@ void VulkanEngine::init_background_pipelines() {
     compute_layout.pSetLayouts = &draw_image_descriptor_layout;
     compute_layout.setLayoutCount = 1;
 
+    VkPushConstantRange push_constant_range = {};
+    push_constant_range.offset = 0;
+    push_constant_range.size = sizeof(ComputePushConstants);
+    push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    compute_layout.pPushConstantRanges = &push_constant_range;
+    compute_layout.pushConstantRangeCount = 1;
+
     VK_CHECK(vkCreatePipelineLayout(device, &compute_layout, nullptr, &gradient_pipeline_layout));
 
-    VkShaderModule compute_draw_shader;
-    if (auto opt_shader_module = vkutil::load_shader_module("../shaders/gradient.comp.spv",
+    VkShaderModule gradient_colour_shader;
+    if (auto opt_shader_module = vkutil::load_shader_module("../shaders/gradient_color.comp.spv",
                                                             device); opt_shader_module.has_value()) {
-        compute_draw_shader = opt_shader_module.value();
+        gradient_colour_shader = opt_shader_module.value();
+    } else {
+        fmt::print("Error when building the compute shader \n");
+    }
+
+    VkShaderModule sky_shader;
+    if (auto opt_shader_module = vkutil::load_shader_module("../shaders/sky.comp.spv",
+                                                            device); opt_shader_module.has_value()) {
+        sky_shader = opt_shader_module.value();
     } else {
         fmt::print("Error when building the compute shader \n");
     }
@@ -402,7 +492,7 @@ void VulkanEngine::init_background_pipelines() {
     stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage_create_info.pNext = nullptr;
     stage_create_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage_create_info.module = compute_draw_shader;
+    stage_create_info.module = gradient_colour_shader;
     stage_create_info.pName = "main";
 
     VkComputePipelineCreateInfo compute_pipeline_create_info = {};
@@ -411,15 +501,96 @@ void VulkanEngine::init_background_pipelines() {
     compute_pipeline_create_info.layout = gradient_pipeline_layout;
     compute_pipeline_create_info.stage = stage_create_info;
 
-    VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute_pipeline_create_info, nullptr,
-                                      &gradient_pipeline));
+    ComputeEffect gradient;
+    gradient.layout = gradient_pipeline_layout;
+    gradient.name = "gradient";
+    gradient.data = {};
 
-    vkDestroyShaderModule(device, compute_draw_shader, nullptr);
+    gradient.data.data1 = glm::vec4(1, 0, 0, 1);
+    gradient.data.data2 = glm::vec4(0, 0, 1, 1);
+
+    VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute_pipeline_create_info, nullptr,
+                                      &gradient.pipeline));
+
+    compute_pipeline_create_info.stage.module = sky_shader;
+
+    ComputeEffect sky;
+    sky.layout = gradient_pipeline_layout;
+    sky.name = "sky";
+    sky.data = {};
+
+    sky.data.data1 = glm::vec4(0.1, 0.2, 0.4, 0.97);
+
+    VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compute_pipeline_create_info, nullptr,
+                                      &sky.pipeline));
+
+    background_effects.push_back(gradient);
+    background_effects.push_back(sky);
+
+    vkDestroyShaderModule(device, gradient_colour_shader, nullptr);
+    vkDestroyShaderModule(device, sky_shader, nullptr);
 
     global_deletion_queue.push_function([&]() {
         vkDestroyPipelineLayout(device, gradient_pipeline_layout, nullptr);
-        vkDestroyPipeline(device, gradient_pipeline, nullptr);
+        vkDestroyPipeline(device, sky.pipeline, nullptr);
+        vkDestroyPipeline(device, gradient.pipeline, nullptr);
     });
+}
+
+void VulkanEngine::init_imgui() {
+    VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLER,                1000},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
+                                         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1000},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1000},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,   1000},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   1000},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1000},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1000},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
+                                         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1000}};
+
+    VkDescriptorPoolCreateInfo pool_create_info = {};
+    pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_create_info.maxSets = 1000;
+    pool_create_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
+    pool_create_info.pPoolSizes = pool_sizes;
+
+    VkDescriptorPool imgui_descriptor_pool;
+    VK_CHECK(vkCreateDescriptorPool(device, &pool_create_info, nullptr, &imgui_descriptor_pool));
+
+    ImGui::CreateContext();
+
+    ImGui_ImplSDL2_InitForVulkan(window);
+
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = instance;
+    init_info.PhysicalDevice = chosen_gpu;
+    init_info.Device = device;
+    init_info.Queue = graphics_queue;
+    init_info.DescriptorPool = imgui_descriptor_pool;
+    init_info.MinImageCount = 3;
+    init_info.ImageCount = 3;
+    init_info.UseDynamicRendering = true;
+
+    init_info.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swapchain_image_format;
+
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+    ImGui_ImplVulkan_Init(&init_info);
+
+    ImGui_ImplVulkan_CreateFontsTexture();
+
+    global_deletion_queue.push_function(
+            [=]() {
+                ImGui_ImplVulkan_Shutdown();
+                vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
+            }
+    );
+
 }
 
 void VulkanEngine::create_swapchain(uint32_t width, uint32_t height) {
